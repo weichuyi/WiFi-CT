@@ -29,31 +29,35 @@ import psutil
 import winreg
 
 
-# ─────────────────────── 颜色主题（Catppuccin Mocha） ───────────────────────
+# ─────────────────────── 颜色主题（Win11 Mica · 浅色） ───────────────────────
 
 C = {
-    "base":     "#1e1e2e",
-    "mantle":   "#181825",
-    "crust":    "#11111b",
-    "surface0": "#313244",
-    "surface1": "#45475a",
-    "surface2": "#585b70",
-    "overlay0": "#6c7086",
-    "overlay1": "#7f849c",
-    "text":     "#cdd6f4",
-    "subtext1": "#bac2de",
-    "subtext0": "#a6adc8",
-    "blue":     "#89b4fa",
-    "green":    "#a6e3a1",
-    "red":      "#f38ba8",
-    "yellow":   "#f9e2af",
-    "peach":    "#fab387",
-    "teal":     "#94e2d5",
-    "pink":     "#f5c2e7",
-    "mauve":    "#cba6f7",
-    "lavender": "#b4befe",
-    "sky":      "#89dceb",
-    "sapphire": "#74c7ec",
+    # 背景层（白色/浅灰，Mica 质感）
+    "base":     "#f3f3f3",   # 主背景（Mica 浅灰）
+    "mantle":   "#ffffff",   # 标题栏/卡片（纯白）
+    "crust":    "#e8e8e8",   # 最外层/分隔背景
+    # 面板
+    "surface0": "#f8f8f8",   # 轻卡片/表格背景
+    "surface1": "#e3edff",   # 蓝色选中高亮
+    "surface2": "#c7d9f8",   # 深选中/焦点边框
+    # 文字
+    "overlay0": "#c0c0c0",   # 极淡占位文字
+    "overlay1": "#8a8a8a",   # 次级说明文字
+    "text":     "#1a1a1a",   # 主文字（近黑）
+    "subtext1": "#3c3c3c",   # 二级文字
+    "subtext0": "#606060",   # 三级文字
+    # 彩色 Accent（加深版，在白色背景上清晰）
+    "blue":     "#0078d4",   # Win11 主蓝
+    "green":    "#0e7a0e",   # 深翠绿
+    "red":      "#c42b2b",   # 深红
+    "yellow":   "#a85c00",   # 深琥珀
+    "peach":    "#c45000",   # 深橙
+    "teal":     "#007070",   # 青绿
+    "pink":     "#b5006e",   # 品红
+    "mauve":    "#6929c4",   # 深紫
+    "lavender": "#3f51b5",   # 靛蓝
+    "sky":      "#0097a7",   # 天蓝
+    "sapphire": "#1565c0",   # 宝石蓝
 }
 
 
@@ -83,12 +87,12 @@ class Tooltip:
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
         tw.wm_attributes("-topmost", True)
-        outer = tk.Frame(tw, bg=C["surface2"], padx=1, pady=1)
+        outer = tk.Frame(tw, bg=C["blue"], padx=1, pady=1)
         outer.pack()
         tk.Label(outer, text=self._text,
                  font=("微软雅黑", 8),
                  fg=C["text"], bg=C["surface0"],
-                 padx=8, pady=4).pack()
+                 padx=10, pady=5).pack()
 
     def _hide(self, event=None):
         if self._tip:
@@ -98,49 +102,29 @@ class Tooltip:
 
 def _make_rounded_card(parent, color: str, title: str,
                        default_val: str, val_font_size: int = 16):
-    """用 Canvas 模拟圆角卡片，返回 (card_frame, value_label)"""
-    outer = tk.Frame(parent, bg=C["crust"])
+    """发光边框卡片：1px 彩色外框 + 左侧色条，返回 (card_frame, value_label)"""
+    # 外层用 accent 色作 1px 边框 → 产生发光感
+    glow = tk.Frame(parent, bg=color, padx=1, pady=1)
 
-    canvas = tk.Canvas(outer, bg=C["crust"], highlightthickness=0,
-                       width=10, height=10)
-    canvas.pack(fill=tk.BOTH, expand=True)
+    inner = tk.Frame(glow, bg=C["surface0"])
+    inner.pack(fill=tk.BOTH, expand=True)
 
-    inner = tk.Frame(canvas, bg=C["surface0"])
-    canvas_win = canvas.create_window(0, 0, anchor="nw", window=inner)
+    # 左侧 4px 色条
+    tk.Frame(inner, bg=color, width=4).pack(side=tk.LEFT, fill=tk.Y)
 
-    def _resize(event):
-        w, h = event.width, event.height
-        canvas.config(width=w, height=h)
-        canvas.itemconfig(canvas_win, width=w, height=h)
-        # 圆角矩形边框
-        r = 8
-        canvas.delete("border")
-        canvas.create_arc(0, 0, r*2, r*2, start=90, extent=90,
-                          fill=C["surface0"], outline=C["surface0"], tags="border")
-        canvas.create_arc(w-r*2, 0, w, r*2, start=0, extent=90,
-                          fill=C["surface0"], outline=C["surface0"], tags="border")
-        canvas.create_arc(0, h-r*2, r*2, h, start=180, extent=90,
-                          fill=C["surface0"], outline=C["surface0"], tags="border")
-        canvas.create_arc(w-r*2, h-r*2, w, h, start=270, extent=90,
-                          fill=C["surface0"], outline=C["surface0"], tags="border")
-
-    outer.bind("<Configure>", _resize, add="+")
-
-    # 内容
-    tk.Frame(inner, bg=color, height=3).pack(fill=tk.X)
-    content = tk.Frame(inner, bg=C["surface0"], padx=14, pady=8)
+    content = tk.Frame(inner, bg=C["surface0"], padx=14, pady=10)
     content.pack(fill=tk.BOTH, expand=True)
 
-    tk.Label(content, text=title.upper(),
-             font=("微软雅黑", 7), fg=C["overlay0"],
+    tk.Label(content, text=title,
+             font=("微软雅黑", 8), fg=C["overlay1"],
              bg=C["surface0"]).pack(anchor="w")
 
     val_lbl = tk.Label(content, text=default_val,
                        font=("微软雅黑", val_font_size, "bold"),
                        fg=color, bg=C["surface0"])
-    val_lbl.pack(anchor="w", pady=(2, 0))
+    val_lbl.pack(anchor="w", pady=(3, 0))
 
-    return outer, val_lbl
+    return glow, val_lbl
 
 
 # ─────────────────────── 数据持久化 ───────────────────────
@@ -474,8 +458,39 @@ class WifiMonitorApp:
                                      fg=C["overlay1"], bg=C["mantle"])
         self.status_label.pack(side=tk.LEFT)
 
-        # 分割线
-        tk.Frame(self.root, bg=C["surface0"], height=1).pack(fill=tk.X)
+        # ── 彩色渐变光带（标题栏底边，Win11 风格） ──
+        accent_bar = tk.Canvas(self.root, height=3, highlightthickness=0,
+                               bg=C["blue"])
+        accent_bar.pack(fill=tk.X)
+
+        def _draw_accent(event=None):
+            w = accent_bar.winfo_width()
+            if w < 2:
+                return
+            accent_bar.delete("all")
+            # blue → mauve → pink，60段
+            stops = [(0x4d, 0xa6, 0xff), (0xb8, 0x80, 0xff), (0xff, 0x7e, 0xc8)]
+            segs = 60
+            for i in range(segs):
+                t = i / segs
+                if t < 0.5:
+                    t2  = t * 2
+                    r1, g1, b1 = stops[0]
+                    r2, g2, b2 = stops[1]
+                else:
+                    t2  = (t - 0.5) * 2
+                    r1, g1, b1 = stops[1]
+                    r2, g2, b2 = stops[2]
+                r = int(r1 + (r2 - r1) * t2)
+                g = int(g1 + (g2 - g1) * t2)
+                b = int(b1 + (b2 - b1) * t2)
+                x0 = int(w * i / segs)
+                x1 = int(w * (i + 1) / segs) + 1
+                accent_bar.create_rectangle(x0, 0, x1, 3,
+                                            fill=f"#{r:02x}{g:02x}{b:02x}",
+                                            outline="")
+        accent_bar.bind("<Configure>", lambda e: _draw_accent())
+        accent_bar.after_idle(_draw_accent)
 
         # ── 校园网模式栏 ──
         campus_bar = tk.Frame(self.root, bg=C["surface0"], pady=0)
@@ -493,7 +508,7 @@ class WifiMonitorApp:
 
         tk.Label(campus_bar,
                  text="修改 TTL=64 使校园网无法通过 TTL 差异检测多设备   ⚠ 手机代理/VPN 会修改 HTTP 头，需在手机端关闭",
-                 font=("微软雅黑", 8), fg=C["overlay0"], bg=C["surface0"],
+                 font=("微软雅黑", 8), fg=C["overlay1"], bg=C["surface0"],
                  anchor="w", padx=6).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         campus_right = tk.Frame(campus_bar, bg=C["surface0"])
@@ -593,7 +608,7 @@ class WifiMonitorApp:
                   font_size=9, padx=10, pady=4, fg=None, tooltip=None):
         """按钮工厂：自动添加 hover 变暗效果 + 可选 Tooltip"""
         if fg is None:
-            fg = C["crust"]
+            fg = "#ffffff"
         hover = _darken(color)
         btn = tk.Button(
             parent, text=text,
@@ -665,7 +680,7 @@ class WifiMonitorApp:
     def _do_blink(self):
         if not self.running:
             return
-        color = C["green"] if self._blink_state else "#2d5a3d"
+        color = C["green"] if self._blink_state else C["overlay0"]
         self._header_dot.config(fg=color)
         self._blink_state = not self._blink_state
         self._blink_job = self.root.after(900, self._do_blink)
@@ -725,18 +740,18 @@ class WifiMonitorApp:
             self.tree.column(col, width=w, anchor=anchor, minwidth=40)
 
         # 斑马纹 + 状态颜色
-        self.tree.tag_configure("offline",      foreground=C["surface2"],
+        self.tree.tag_configure("offline",      foreground=C["overlay1"],
                                 background=C["mantle"])
-        self.tree.tag_configure("offline_alt",  foreground=C["surface2"],
-                                background="#1a1a27")
+        self.tree.tag_configure("offline_alt",  foreground=C["overlay1"],
+                                background="#f0f4ff")
         self.tree.tag_configure("online",       foreground=C["text"],
                                 background=C["mantle"])
         self.tree.tag_configure("online_alt",   foreground=C["text"],
-                                background="#1a1a27")
+                                background="#f0f4ff")
         self.tree.tag_configure("active",       foreground=C["green"],
                                 background=C["mantle"])
         self.tree.tag_configure("active_alt",   foreground=C["green"],
-                                background="#1a1a27")
+                                background="#f0f4ff")
 
         vsb = ttk.Scrollbar(parent, orient="vertical",
                             command=self.tree.yview,
@@ -790,7 +805,7 @@ class WifiMonitorApp:
             self.history_tree.column(col, width=w, anchor=tk.CENTER)
 
         self.history_tree.tag_configure("even", background=C["mantle"])
-        self.history_tree.tag_configure("odd",  background="#1a1a27")
+        self.history_tree.tag_configure("odd",  background="#f0f4ff")
 
         vsb2 = ttk.Scrollbar(frame, orient="vertical",
                              command=self.history_tree.yview,
@@ -876,7 +891,7 @@ class WifiMonitorApp:
             self.traffic_tree.column(col, width=w, anchor=tk.CENTER)
 
         self.traffic_tree.tag_configure("even", background=C["mantle"])
-        self.traffic_tree.tag_configure("odd",  background="#1a1a27")
+        self.traffic_tree.tag_configure("odd",  background="#f0f4ff")
 
         vsb3 = ttk.Scrollbar(frame, orient="vertical",
                              command=self.traffic_tree.yview,
@@ -1026,7 +1041,7 @@ class WifiMonitorApp:
         if SCAPY_AVAILABLE and not npcap_ok:
             self._set_status(
                 "⚠ 流量统计需要 Npcap！下载：https://npcap.com/#download  安装后重启软件",
-                color="#f9e2af")
+                color=C["yellow"])
         self._npcap_ok = npcap_ok
 
     # ──────── 监控控制 ────────
@@ -1075,7 +1090,7 @@ class WifiMonitorApp:
     def _check_sniff_error(self):
         global sniff_error
         if sniff_error:
-            self._set_status(f"⚠ 抓包错误：{sniff_error[:90]}", color="#f38ba8")
+            self._set_status(f"⚠ 抓包错误：{sniff_error[:90]}", color=C["red"])
             sniff_error = None
         else:
             self._set_status(
