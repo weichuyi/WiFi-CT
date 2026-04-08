@@ -232,17 +232,29 @@ def calc_speeds():
 
 
 def get_scapy_iface():
-    """从 scapy 接口列表中找到热点接口对象"""
+    """从 scapy 接口列表中找到热点接口对象（兼容 scapy 旧/新版 ip/ips 属性）"""
     if not SCAPY_AVAILABLE:
         return None
     try:
         from scapy.all import conf
         for iface_obj in conf.ifaces.values():
-            ip = getattr(iface_obj, 'ip', None)
-            if isinstance(ip, list):
-                ip = ip[0] if ip else None
-            if ip and str(ip).startswith(hotspot_prefix):
-                return iface_obj
+            # 兼容不同 scapy 版本：旧版用 ip(str/list)，新版用 ips(list)
+            for attr in ('ip', 'ips'):
+                raw = getattr(iface_obj, attr, None)
+                if raw is None:
+                    continue
+                if isinstance(raw, str):
+                    candidates = [raw]
+                elif isinstance(raw, (list, tuple)):
+                    candidates = raw
+                else:
+                    try:
+                        candidates = list(raw)
+                    except Exception:
+                        candidates = [str(raw)]
+                for ip in candidates:
+                    if ip and str(ip).startswith(hotspot_prefix):
+                        return iface_obj
     except Exception:
         pass
     return None
@@ -255,10 +267,20 @@ def start_sniff(scapy_iface):
         return
     try:
         if scapy_iface is not None:
+            # 找到了明确的热点接口，直接在该接口抓包
             sniff(iface=scapy_iface, prn=packet_callback, store=False, filter="ip")
         else:
+            # 未能定位热点接口，在所有接口上抓包并用 BPF 过滤热点子网
+            # 注意：sniff() 不指定 iface 只监听默认接口，必须传 all_ifaces
             subnet = hotspot_prefix + "0/24"
-            sniff(prn=packet_callback, store=False, filter=f"net {subnet}")
+            from scapy.all import conf
+            all_ifaces = list(conf.ifaces.values())
+            if all_ifaces:
+                sniff(iface=all_ifaces, prn=packet_callback, store=False,
+                      filter=f"ip and net {subnet}")
+            else:
+                sniff(prn=packet_callback, store=False,
+                      filter=f"ip and net {subnet}")
     except Exception as e:
         sniff_error = str(e)
 
