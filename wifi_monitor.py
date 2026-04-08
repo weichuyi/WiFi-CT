@@ -29,6 +29,41 @@ import psutil
 import winreg
 
 
+# ─────────────────────── 颜色主题（Catppuccin Mocha） ───────────────────────
+
+C = {
+    "base":     "#1e1e2e",
+    "mantle":   "#181825",
+    "crust":    "#11111b",
+    "surface0": "#313244",
+    "surface1": "#45475a",
+    "surface2": "#585b70",
+    "overlay0": "#6c7086",
+    "overlay1": "#7f849c",
+    "text":     "#cdd6f4",
+    "subtext1": "#bac2de",
+    "subtext0": "#a6adc8",
+    "blue":     "#89b4fa",
+    "green":    "#a6e3a1",
+    "red":      "#f38ba8",
+    "yellow":   "#f9e2af",
+    "peach":    "#fab387",
+    "teal":     "#94e2d5",
+    "pink":     "#f5c2e7",
+    "mauve":    "#cba6f7",
+    "lavender": "#b4befe",
+    "sky":      "#89dceb",
+    "sapphire": "#74c7ec",
+}
+
+
+def _darken(hex_color: str, factor: float = 0.82) -> str:
+    """将颜色加深，用于 hover 效果"""
+    c = hex_color.lstrip("#")
+    r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+    return f"#{int(r*factor):02x}{int(g*factor):02x}{int(b*factor):02x}"
+
+
 # ─────────────────────── 数据持久化 ───────────────────────
 
 DATA_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -296,9 +331,10 @@ class WifiMonitorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("WiFi热点流量监控")
-        self.root.geometry("1100x700")
+        self.root.geometry("1160x740")
+        self.root.minsize(900, 600)
         self.root.resizable(True, True)
-        self.root.configure(bg="#1e1e2e")
+        self.root.configure(bg=C["crust"])
 
         self.running          = False
         self.sniff_thread     = None
@@ -307,17 +343,18 @@ class WifiMonitorApp:
 
         self.device_cache       = {}
         self.device_cache_lock  = threading.Lock()
-        # 从文件加载自定义名称
         self.custom_names       = _load_json(NAMES_FILE, {})
         self._resolving_ips     = set()
 
-        # 设备历史记录：{mac: {name, ip, first_seen, last_seen, sessions:[]}}
         self._device_history    = _load_json(HISTORY_FILE, {})
-        # 流量日志：{"YYYY-MM-DD": {mac: {up, down}}, ...}
         self._traffic_log       = _load_json(TRAFFIC_FILE, {})
-        # 本次会话每台设备在流量日志里的基准（防止重复累计）
-        self._session_base      = {}   # {ip: {upload, download}}
+        self._session_base      = {}
         self._session_date      = date.today().isoformat()
+
+        self._blink_state       = True
+        self._blink_job         = None
+        self._uptime_job        = None
+        self._start_time        = 0.0
 
         self._build_ui()
         self._build_context_menu()
@@ -327,98 +364,120 @@ class WifiMonitorApp:
     # ──────── UI 构建 ────────
 
     def _build_ui(self):
-        # 标题栏
-        top = tk.Frame(self.root, bg="#1e1e2e")
-        top.pack(fill=tk.X, padx=16, pady=(12, 0))
+        # ── 顶部标题栏 ──
+        header = tk.Frame(self.root, bg=C["mantle"], pady=0)
+        header.pack(fill=tk.X)
 
-        tk.Label(top, text="📡  WiFi热点流量监控",
-                 font=("微软雅黑", 16, "bold"),
-                 fg="#cdd6f4", bg="#1e1e2e").pack(side=tk.LEFT)
+        # 左侧：图标 + 标题 + 版本
+        left_hdr = tk.Frame(header, bg=C["mantle"])
+        left_hdr.pack(side=tk.LEFT, padx=18, pady=10)
 
-        self.status_label = tk.Label(top, text="● 未启动",
-                                     font=("微软雅黑", 10),
-                                     fg="#f38ba8", bg="#1e1e2e")
-        self.status_label.pack(side=tk.RIGHT, padx=8)
+        tk.Label(left_hdr, text="📡", font=("Segoe UI Emoji", 18),
+                 bg=C["mantle"], fg=C["blue"]).pack(side=tk.LEFT)
+        tk.Label(left_hdr, text="  WiFi 热点流量监控",
+                 font=("微软雅黑", 15, "bold"),
+                 fg=C["text"], bg=C["mantle"]).pack(side=tk.LEFT)
+        tk.Label(left_hdr, text="  v1.0",
+                 font=("微软雅黑", 9),
+                 fg=C["overlay0"], bg=C["mantle"]).pack(side=tk.LEFT, pady=(4, 0))
 
-        # 校园网模式栏
-        campus_bar = tk.Frame(self.root, bg="#2a2a3e")
-        campus_bar.pack(fill=tk.X, padx=16, pady=(6, 0))
+        # 右侧：运行状态指示
+        right_hdr = tk.Frame(header, bg=C["mantle"])
+        right_hdr.pack(side=tk.RIGHT, padx=18, pady=10)
 
-        tk.Label(campus_bar, text="🏫  校园网模式（解决热点断网）",
-                 font=("微软雅黑", 9, "bold"), fg="#f9e2af", bg="#2a2a3e",
-                 anchor="w", padx=10, pady=5).pack(side=tk.LEFT)
+        self._header_dot = tk.Label(right_hdr, text="●",
+                                    font=("微软雅黑", 13),
+                                    fg=C["red"], bg=C["mantle"])
+        self._header_dot.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.status_label = tk.Label(right_hdr, text="未启动",
+                                     font=("微软雅黑", 9),
+                                     fg=C["overlay1"], bg=C["mantle"])
+        self.status_label.pack(side=tk.LEFT)
+
+        # 分割线
+        tk.Frame(self.root, bg=C["surface0"], height=1).pack(fill=tk.X)
+
+        # ── 校园网模式栏 ──
+        campus_bar = tk.Frame(self.root, bg=C["surface0"], pady=0)
+        campus_bar.pack(fill=tk.X)
+
+        campus_left = tk.Frame(campus_bar, bg=C["surface0"])
+        campus_left.pack(side=tk.LEFT, padx=12, pady=7)
+
+        tk.Label(campus_left, text="🏫",
+                 font=("Segoe UI Emoji", 11), bg=C["surface0"],
+                 fg=C["yellow"]).pack(side=tk.LEFT)
+        tk.Label(campus_left, text="  校园网模式",
+                 font=("微软雅黑", 9, "bold"),
+                 fg=C["yellow"], bg=C["surface0"]).pack(side=tk.LEFT)
 
         tk.Label(campus_bar,
-                 text="TTL伪装：让校园网无法通过TTL差异检测多设备  |  ⚠ 代理/VPN会修改HTTP请求头，另需在手机端关闭代理或使用全局透明代理",
-                 font=("微软雅黑", 8), fg="#6c7086", bg="#2a2a3e",
-                 anchor="w", padx=4).pack(side=tk.LEFT, fill=tk.X, expand=True)
+                 text="修改 TTL=64 使校园网无法通过 TTL 差异检测多设备   ⚠ 手机代理/VPN 会修改 HTTP 头，需在手机端关闭",
+                 font=("微软雅黑", 8), fg=C["overlay0"], bg=C["surface0"],
+                 anchor="w", padx=6).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        cbf = tk.Frame(campus_bar, bg="#2a2a3e")
-        cbf.pack(side=tk.RIGHT, padx=8, pady=3)
+        campus_right = tk.Frame(campus_bar, bg=C["surface0"])
+        campus_right.pack(side=tk.RIGHT, padx=10, pady=5)
 
         self.ttl_status_label = tk.Label(
-            cbf, text=f"当前TTL：{get_current_ttl()}",
-            font=("微软雅黑", 8), fg="#89dceb", bg="#2a2a3e", padx=6)
+            campus_right, text=f"TTL: {get_current_ttl()}",
+            font=("微软雅黑", 8, "bold"), fg=C["sky"], bg=C["surface0"],
+            padx=8, pady=3)
         self.ttl_status_label.pack(side=tk.LEFT)
 
-        self.campus_btn = tk.Button(
-            cbf, text="开启校园网模式",
-            font=("微软雅黑", 9, "bold"), bg="#f9e2af", fg="#1e1e2e",
-            relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
-            command=self.toggle_campus_mode)
-        self.campus_btn.pack(side=tk.LEFT, padx=4)
+        self.campus_btn = self._make_btn(
+            campus_right, "开启校园网模式", C["yellow"],
+            self.toggle_campus_mode, font_size=8, padx=10, pady=3)
+        self.campus_btn.pack(side=tk.LEFT, padx=6)
 
-        # 热点信息 + 控制按钮
-        info_frame = tk.Frame(self.root, bg="#313244")
-        info_frame.pack(fill=tk.X, padx=16, pady=8)
+        # 分割线
+        tk.Frame(self.root, bg=C["crust"], height=1).pack(fill=tk.X)
 
-        self.hotspot_info = tk.Label(
-            info_frame, text="热点状态：检测中...",
-            font=("微软雅黑", 9), fg="#a6e3a1", bg="#313244",
-            anchor="w", padx=10, pady=6)
-        self.hotspot_info.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # ── 工具栏 ──
+        toolbar = tk.Frame(self.root, bg=C["base"], pady=0)
+        toolbar.pack(fill=tk.X, padx=0)
 
-        btn_frame = tk.Frame(info_frame, bg="#313244")
-        btn_frame.pack(side=tk.RIGHT, padx=8, pady=4)
+        btn_area = tk.Frame(toolbar, bg=C["base"])
+        btn_area.pack(side=tk.LEFT, padx=14, pady=8)
 
-        self.start_btn = tk.Button(
-            btn_frame, text="▶ 开始监控",
-            font=("微软雅黑", 9, "bold"), bg="#a6e3a1", fg="#1e1e2e",
-            relief=tk.FLAT, padx=12, pady=4, cursor="hand2",
-            command=self.toggle_monitor)
-        self.start_btn.pack(side=tk.LEFT, padx=4)
+        self.start_btn = self._make_btn(
+            btn_area, "▶  开始监控", C["green"],
+            self.toggle_monitor, font_size=9, padx=14, pady=5)
+        self.start_btn.pack(side=tk.LEFT, padx=(0, 6))
 
         for text, color, cmd in [
-            ("🔄 刷新设备",  "#89b4fa", self.refresh_devices),
-            ("🗑 清空统计",  "#f38ba8", self.clear_stats),
-            ("⚡ 断开设备",  "#cba6f7", self.kick_selected_device),
+            ("🔄  刷新",  C["sapphire"], self.refresh_devices),
+            ("🗑  清空",  C["red"],      self.clear_stats),
+            ("⚡  断开",  C["mauve"],    self.kick_selected_device),
         ]:
-            tk.Button(btn_frame, text=text, font=("微软雅黑", 9),
-                      bg=color, fg="#1e1e2e", relief=tk.FLAT,
-                      padx=10, pady=4, cursor="hand2",
-                      command=cmd).pack(side=tk.LEFT, padx=3)
+            self._make_btn(btn_area, text, color, cmd,
+                           font_size=9, padx=10, pady=5).pack(side=tk.LEFT, padx=3)
+
+        self.hotspot_info = tk.Label(
+            toolbar, text="热点状态：检测中...",
+            font=("微软雅黑", 8), fg=C["overlay1"], bg=C["base"],
+            anchor="e", padx=14)
+        self.hotspot_info.pack(side=tk.RIGHT, fill=tk.X, expand=True)
+
+        # ── 统计卡片栏 ──
+        cards_frame = tk.Frame(self.root, bg=C["crust"])
+        cards_frame.pack(fill=tk.X, padx=14, pady=(6, 0))
+
+        self._build_stat_cards(cards_frame)
 
         # ── Notebook 标签页 ──
-        nb_style = ttk.Style()
-        nb_style.theme_use("clam")
-        nb_style.configure("TNotebook", background="#1e1e2e", borderwidth=0)
-        nb_style.configure("TNotebook.Tab",
-                           background="#313244", foreground="#a6adc8",
-                           padding=[12, 4], font=("微软雅黑", 9))
-        nb_style.map("TNotebook.Tab",
-                     background=[("selected", "#45475a")],
-                     foreground=[("selected", "#cdd6f4")])
+        self._apply_notebook_style()
+        self.notebook = ttk.Notebook(self.root, style="Custom.TNotebook")
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=14, pady=(6, 0))
 
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 4))
+        tab1 = tk.Frame(self.notebook, bg=C["mantle"])
+        tab2 = tk.Frame(self.notebook, bg=C["mantle"])
+        tab3 = tk.Frame(self.notebook, bg=C["mantle"])
 
-        tab1 = tk.Frame(self.notebook, bg="#1e1e2e")
-        tab2 = tk.Frame(self.notebook, bg="#1e1e2e")
-        tab3 = tk.Frame(self.notebook, bg="#1e1e2e")
-
-        self.notebook.add(tab1, text="📊 实时监控")
-        self.notebook.add(tab2, text="📋 设备历史")
-        self.notebook.add(tab3, text="📈 流量统计")
+        self.notebook.add(tab1, text="  📊  实时监控  ")
+        self.notebook.add(tab2, text="  📋  设备历史  ")
+        self.notebook.add(tab3, text="  📈  流量统计  ")
 
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -426,80 +485,215 @@ class WifiMonitorApp:
         self._build_history_tab(tab2)
         self._build_traffic_tab(tab3)
 
-        # 底部状态栏
-        bottom = tk.Frame(self.root, bg="#313244")
+        # ── 底部状态栏 ──
+        bottom = tk.Frame(self.root, bg=C["surface0"], pady=0)
         bottom.pack(fill=tk.X, side=tk.BOTTOM)
+
+        tk.Frame(self.root, bg=C["crust"], height=1).pack(fill=tk.X, side=tk.BOTTOM)
+
+        self._status_dot = tk.Label(bottom, text="●",
+                                    font=("微软雅黑", 8),
+                                    fg=C["overlay0"], bg=C["surface0"])
+        self._status_dot.pack(side=tk.LEFT, padx=(10, 2), pady=4)
 
         self.bottom_label = tk.Label(
             bottom, text="就绪 | 需要管理员权限运行以获取完整功能",
-            font=("微软雅黑", 8), fg="#6c7086", bg="#313244",
-            anchor="w", padx=10, pady=4)
-        self.bottom_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            font=("微软雅黑", 8), fg=C["overlay1"], bg=C["surface0"],
+            anchor="w")
+        self.bottom_label.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=4)
 
         self.device_count_label = tk.Label(
-            bottom, text="设备数：0",
-            font=("微软雅黑", 8), fg="#89b4fa", bg="#313244", padx=10)
-        self.device_count_label.pack(side=tk.RIGHT)
+            bottom, text="在线：0 | 可见：0",
+            font=("微软雅黑", 8), fg=C["subtext0"], bg=C["surface0"], padx=12)
+        self.device_count_label.pack(side=tk.RIGHT, pady=4)
 
-    def _build_monitor_tab(self, parent):
-        """实时监控标签页 - 设备列表"""
-        cols       = ("设备名",  "IP地址",   "MAC地址",
-                      "↑速率",   "↓速率",
-                      "上传总量", "下载总量", "总流量",
-                      "状态",    "首次发现")
-        col_widths = [155, 120, 155, 90, 90, 90, 90, 90, 55, 120]
+    def _make_btn(self, parent, text, color, command,
+                  font_size=9, padx=10, pady=4, fg=None):
+        """按钮工厂：自动添加 hover 变暗效果"""
+        if fg is None:
+            fg = C["crust"]
+        hover = _darken(color)
+        btn = tk.Button(
+            parent, text=text,
+            font=("微软雅黑", font_size, "bold"),
+            bg=color, fg=fg,
+            relief=tk.FLAT, padx=padx, pady=pady,
+            cursor="hand2", command=command,
+            activebackground=hover, activeforeground=fg, bd=0)
+        btn.bind("<Enter>", lambda e: btn.config(bg=hover))
+        btn.bind("<Leave>", lambda e: btn.config(bg=color))
+        return btn
 
+    def _apply_notebook_style(self):
         style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Custom.TNotebook",
+                         background=C["crust"], borderwidth=0, tabmargins=[0, 0, 0, 0])
+        style.configure("Custom.TNotebook.Tab",
+                         background=C["surface0"], foreground=C["subtext0"],
+                         padding=[4, 6], font=("微软雅黑", 9),
+                         borderwidth=0)
+        style.map("Custom.TNotebook.Tab",
+                  background=[("selected", C["mantle"]), ("active", C["surface1"])],
+                  foreground=[("selected", C["blue"]),   ("active", C["text"])])
         style.configure("Dark.Treeview",
-                         background="#181825", foreground="#cdd6f4",
-                         fieldbackground="#181825", rowheight=27,
+                         background=C["mantle"], foreground=C["text"],
+                         fieldbackground=C["mantle"], rowheight=30,
                          font=("微软雅黑", 9))
         style.configure("Dark.Treeview.Heading",
-                         background="#313244", foreground="#89b4fa",
+                         background=C["surface0"], foreground=C["blue"],
                          font=("微软雅黑", 9, "bold"), relief=tk.FLAT)
         style.map("Dark.Treeview",
-                  background=[("selected", "#45475a")],
-                  foreground=[("selected", "#cdd6f4")])
+                  background=[("selected", C["surface1"])],
+                  foreground=[("selected", C["text"])])
+        style.configure("Dark.Vertical.TScrollbar",
+                         background=C["surface0"], troughcolor=C["mantle"],
+                         arrowcolor=C["overlay0"], borderwidth=0, relief=tk.FLAT)
 
-        self.tree = ttk.Treeview(parent, columns=cols, show="headings",
-                                  style="Dark.Treeview", selectmode="browse")
-        for col, width in zip(cols, col_widths):
+    def _build_stat_cards(self, parent):
+        """构建4个统计卡片：在线设备 / 总上传 / 总下载 / 运行时长"""
+        card_defs = [
+            ("在线设备", "0",        C["blue"],    "_card_devices_val",  "台"),
+            ("总上传",   "0 B",      C["green"],   "_card_upload_val",   ""),
+            ("总下载",   "0 B",      C["peach"],   "_card_download_val", ""),
+            ("运行时长", "00:00:00", C["mauve"],   "_card_uptime_val",   ""),
+        ]
+        for i, (label, default, color, attr, unit) in enumerate(card_defs):
+            card = tk.Frame(parent, bg=C["surface0"], padx=16, pady=10)
+            card.grid(row=0, column=i, padx=5, pady=0, sticky="nsew")
+            parent.columnconfigure(i, weight=1)
+
+            # 顶部色条
+            tk.Frame(card, bg=color, height=3).pack(fill=tk.X, pady=(0, 6))
+
+            tk.Label(card, text=label.upper(),
+                     font=("微软雅黑", 7), fg=C["overlay0"],
+                     bg=C["surface0"]).pack(anchor="w")
+            val_lbl = tk.Label(card, text=default,
+                               font=("微软雅黑", 16, "bold"),
+                               fg=color, bg=C["surface0"])
+            val_lbl.pack(anchor="w")
+            setattr(self, attr, val_lbl)
+
+    def _update_stat_cards(self, online_count, stats_copy):
+        """更新统计卡片数据（在 _update_table 里调用）"""
+        self._card_devices_val.config(text=str(online_count))
+        total_up   = sum(s.get("upload",   0) for s in stats_copy.values())
+        total_down = sum(s.get("download", 0) for s in stats_copy.values())
+        self._card_upload_val.config(text=_fmt_bytes(total_up))
+        self._card_download_val.config(text=_fmt_bytes(total_down))
+
+    def _start_blink(self):
+        self._blink_state = True
+        self._do_blink()
+
+    def _do_blink(self):
+        if not self.running:
+            return
+        color = C["green"] if self._blink_state else "#2d5a3d"
+        self._header_dot.config(fg=color)
+        self._blink_state = not self._blink_state
+        self._blink_job = self.root.after(900, self._do_blink)
+
+    def _stop_blink(self):
+        if self._blink_job:
+            self.root.after_cancel(self._blink_job)
+            self._blink_job = None
+        self._header_dot.config(fg=C["red"])
+
+    def _start_uptime(self):
+        self._start_time = time.time()
+        self._update_uptime()
+
+    def _update_uptime(self):
+        if not self.running:
+            return
+        elapsed = int(time.time() - self._start_time)
+        h = elapsed // 3600
+        m = (elapsed % 3600) // 60
+        s = elapsed % 60
+        self._card_uptime_val.config(text=f"{h:02d}:{m:02d}:{s:02d}")
+        self._uptime_job = self.root.after(1000, self._update_uptime)
+
+    def _stop_uptime(self):
+        if self._uptime_job:
+            self.root.after_cancel(self._uptime_job)
+            self._uptime_job = None
+        self._card_uptime_val.config(text="00:00:00")
+
+    def _build_monitor_tab(self, parent):
+        """实时监控标签页"""
+        self.tree = ttk.Treeview(
+            parent,
+            columns=("设备名", "IP地址", "MAC地址",
+                     "↑速率", "↓速率",
+                     "上传总量", "下载总量", "总流量",
+                     "状态", "首次发现"),
+            show="headings",
+            style="Dark.Treeview",
+            selectmode="browse")
+
+        col_cfg = [
+            ("设备名",   160, tk.W),
+            ("IP地址",   118, tk.CENTER),
+            ("MAC地址",  150, tk.CENTER),
+            ("↑速率",    90,  tk.CENTER),
+            ("↓速率",    90,  tk.CENTER),
+            ("上传总量",  88,  tk.CENTER),
+            ("下载总量",  88,  tk.CENTER),
+            ("总流量",    88,  tk.CENTER),
+            ("状态",      52,  tk.CENTER),
+            ("首次发现", 110,  tk.CENTER),
+        ]
+        for col, w, anchor in col_cfg:
             self.tree.heading(col, text=col)
-            self.tree.column(col, width=width, anchor=tk.CENTER)
+            self.tree.column(col, width=w, anchor=anchor, minwidth=40)
 
-        self.tree.tag_configure("offline", foreground="#585b70")
-        self.tree.tag_configure("online",  foreground="#cdd6f4")
-        self.tree.tag_configure("active",  foreground="#a6e3a1")
+        # 斑马纹 + 状态颜色
+        self.tree.tag_configure("offline",      foreground=C["surface2"],
+                                background=C["mantle"])
+        self.tree.tag_configure("offline_alt",  foreground=C["surface2"],
+                                background="#1a1a27")
+        self.tree.tag_configure("online",       foreground=C["text"],
+                                background=C["mantle"])
+        self.tree.tag_configure("online_alt",   foreground=C["text"],
+                                background="#1a1a27")
+        self.tree.tag_configure("active",       foreground=C["green"],
+                                background=C["mantle"])
+        self.tree.tag_configure("active_alt",   foreground=C["green"],
+                                background="#1a1a27")
 
-        vsb = ttk.Scrollbar(parent, orient="vertical", command=self.tree.yview)
+        vsb = ttk.Scrollbar(parent, orient="vertical",
+                            command=self.tree.yview,
+                            style="Dark.Vertical.TScrollbar")
         self.tree.configure(yscrollcommand=vsb.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0), pady=8)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y, pady=8, padx=(0, 6))
 
-        self.tree.bind("<Double-1>",  lambda e: self._rename_device())
-        self.tree.bind("<Button-3>",  self._on_right_click)
+        self.tree.bind("<Double-1>", lambda e: self._rename_device())
+        self.tree.bind("<Button-3>", self._on_right_click)
 
     def _build_history_tab(self, parent):
         """设备历史标签页"""
-        toolbar = tk.Frame(parent, bg="#1e1e2e")
-        toolbar.pack(fill=tk.X, pady=(6, 2), padx=8)
+        toolbar = tk.Frame(parent, bg=C["mantle"])
+        toolbar.pack(fill=tk.X, pady=(8, 4), padx=8)
 
         tk.Label(toolbar, text="所有曾连接过的设备（按最后上线时间排序）",
-                 font=("微软雅黑", 9), fg="#a6adc8", bg="#1e1e2e").pack(side=tk.LEFT)
+                 font=("微软雅黑", 9), fg=C["subtext0"],
+                 bg=C["mantle"]).pack(side=tk.LEFT)
 
-        tk.Button(toolbar, text="🗑 清空历史", font=("微软雅黑", 9),
-                  bg="#f38ba8", fg="#1e1e2e", relief=tk.FLAT, padx=8, pady=2,
-                  cursor="hand2", command=self._clear_history).pack(side=tk.RIGHT, padx=4)
-
-        tk.Button(toolbar, text="🔄 刷新", font=("微软雅黑", 9),
-                  bg="#89b4fa", fg="#1e1e2e", relief=tk.FLAT, padx=8, pady=2,
-                  cursor="hand2", command=self._refresh_history_tab).pack(side=tk.RIGHT, padx=4)
+        self._make_btn(toolbar, "🗑  清空历史", C["red"],
+                       self._clear_history, font_size=8, padx=8, pady=3
+                       ).pack(side=tk.RIGHT, padx=4)
+        self._make_btn(toolbar, "🔄  刷新", C["sapphire"],
+                       self._refresh_history_tab, font_size=8, padx=8, pady=3
+                       ).pack(side=tk.RIGHT, padx=4)
 
         h_cols = ("设备名", "MAC地址", "最后IP", "首次连接", "最后连接", "累计上线次数")
-        h_widths = [180, 155, 130, 155, 155, 100]
+        h_widths = [190, 155, 128, 155, 155, 100]
 
-        frame = tk.Frame(parent, bg="#1e1e2e")
-        frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 4))
+        frame = tk.Frame(parent, bg=C["mantle"])
+        frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
 
         self.history_tree = ttk.Treeview(frame, columns=h_cols, show="headings",
                                           style="Dark.Treeview", selectmode="browse")
@@ -507,67 +701,99 @@ class WifiMonitorApp:
             self.history_tree.heading(col, text=col)
             self.history_tree.column(col, width=w, anchor=tk.CENTER)
 
-        vsb2 = ttk.Scrollbar(frame, orient="vertical", command=self.history_tree.yview)
+        self.history_tree.tag_configure("even", background=C["mantle"])
+        self.history_tree.tag_configure("odd",  background="#1a1a27")
+
+        vsb2 = ttk.Scrollbar(frame, orient="vertical",
+                             command=self.history_tree.yview,
+                             style="Dark.Vertical.TScrollbar")
         self.history_tree.configure(yscrollcommand=vsb2.set)
         self.history_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb2.pack(side=tk.RIGHT, fill=tk.Y)
+        vsb2.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 2))
 
     def _build_traffic_tab(self, parent):
         """流量统计标签页"""
-        top = tk.Frame(parent, bg="#1e1e2e")
-        top.pack(fill=tk.X, padx=8, pady=(6, 2))
+        # 筛选工具栏
+        filter_bar = tk.Frame(parent, bg=C["surface0"], pady=6)
+        filter_bar.pack(fill=tk.X, padx=8, pady=(8, 0))
 
-        tk.Label(top, text="统计范围：", font=("微软雅黑", 9),
-                 fg="#a6adc8", bg="#1e1e2e").pack(side=tk.LEFT)
+        tk.Label(filter_bar, text="  统计范围",
+                 font=("微软雅黑", 8, "bold"), fg=C["subtext0"],
+                 bg=C["surface0"]).pack(side=tk.LEFT, padx=(4, 8))
 
         self._traffic_range = tk.StringVar(value="日")
-        for txt in ("日", "月", "年", "全部"):
-            tk.Radiobutton(top, text=txt, variable=self._traffic_range, value=txt,
-                           font=("微软雅黑", 9), fg="#cdd6f4", bg="#1e1e2e",
-                           selectcolor="#313244", activebackground="#1e1e2e",
-                           command=self._refresh_traffic_tab).pack(side=tk.LEFT, padx=4)
+        for txt, color in [("日", C["blue"]), ("月", C["teal"]),
+                           ("年", C["mauve"]), ("全部", C["overlay1"])]:
+            rb = tk.Radiobutton(
+                filter_bar, text=f"  {txt}  ",
+                variable=self._traffic_range, value=txt,
+                font=("微软雅黑", 9, "bold"),
+                fg=C["text"], bg=C["surface0"],
+                selectcolor=C["surface1"],
+                activebackground=C["surface0"],
+                activeforeground=C["text"],
+                indicatoron=False,
+                relief=tk.FLAT, padx=6, pady=3,
+                cursor="hand2",
+                command=self._refresh_traffic_tab)
+            rb.pack(side=tk.LEFT, padx=2)
 
-        # 日期选择
-        tk.Label(top, text="  日期(YYYY-MM-DD):",
-                 font=("微软雅黑", 9), fg="#a6adc8", bg="#1e1e2e").pack(side=tk.LEFT)
+        tk.Label(filter_bar, text="  日期:",
+                 font=("微软雅黑", 8), fg=C["subtext0"],
+                 bg=C["surface0"]).pack(side=tk.LEFT, padx=(12, 2))
+
         self._traffic_date_var = tk.StringVar(value=date.today().isoformat())
-        date_entry = tk.Entry(top, textvariable=self._traffic_date_var,
-                              width=12, font=("微软雅黑", 9),
-                              bg="#313244", fg="#cdd6f4",
-                              insertbackground="#cdd6f4", relief=tk.FLAT)
+        date_entry = tk.Entry(
+            filter_bar, textvariable=self._traffic_date_var,
+            width=12, font=("微软雅黑", 9),
+            bg=C["surface1"], fg=C["text"],
+            insertbackground=C["text"], relief=tk.FLAT,
+            highlightthickness=1, highlightcolor=C["blue"],
+            highlightbackground=C["surface2"])
         date_entry.pack(side=tk.LEFT, padx=4)
 
-        tk.Button(top, text="查询", font=("微软雅黑", 9),
-                  bg="#89b4fa", fg="#1e1e2e", relief=tk.FLAT, padx=8, pady=2,
-                  cursor="hand2", command=self._refresh_traffic_tab).pack(side=tk.LEFT, padx=4)
+        self._make_btn(filter_bar, "查询", C["blue"],
+                       self._refresh_traffic_tab,
+                       font_size=8, padx=10, pady=3).pack(side=tk.LEFT, padx=4)
+        self._make_btn(filter_bar, "🔄", C["surface1"],
+                       self._refresh_traffic_tab,
+                       font_size=8, padx=6, pady=3,
+                       fg=C["text"]).pack(side=tk.LEFT)
 
-        tk.Button(top, text="🔄", font=("微软雅黑", 9),
-                  bg="#313244", fg="#cdd6f4", relief=tk.FLAT, padx=6, pady=2,
-                  cursor="hand2", command=self._refresh_traffic_tab).pack(side=tk.LEFT)
+        # 合计摘要
+        summary_frame = tk.Frame(parent, bg=C["mantle"], pady=5)
+        summary_frame.pack(fill=tk.X, padx=8, pady=(4, 0))
 
-        # 合计说明
         self._traffic_summary_label = tk.Label(
-            parent, text="", font=("微软雅黑", 9, "bold"),
-            fg="#f9e2af", bg="#1e1e2e", anchor="w", padx=12)
+            summary_frame, text="  请点击查询",
+            font=("微软雅黑", 9, "bold"),
+            fg=C["yellow"], bg=C["mantle"], anchor="w", padx=8)
         self._traffic_summary_label.pack(fill=tk.X)
 
+        # 表格
         t_cols = ("设备名", "MAC地址", "上传", "下载", "总流量")
         t_widths = [200, 160, 120, 120, 120]
 
-        frame = tk.Frame(parent, bg="#1e1e2e")
-        frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 4))
+        frame = tk.Frame(parent, bg=C["mantle"])
+        frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 8))
 
         self.traffic_tree = ttk.Treeview(frame, columns=t_cols, show="headings",
                                           style="Dark.Treeview", selectmode="browse")
         for col, w in zip(t_cols, t_widths):
-            self.traffic_tree.heading(col, text=col,
-                                      command=lambda c=col: self._sort_traffic_tree(c))
+            self.traffic_tree.heading(
+                col, text=col,
+                command=lambda c=col: self._sort_traffic_tree(c))
             self.traffic_tree.column(col, width=w, anchor=tk.CENTER)
 
-        vsb3 = ttk.Scrollbar(frame, orient="vertical", command=self.traffic_tree.yview)
+        self.traffic_tree.tag_configure("even", background=C["mantle"])
+        self.traffic_tree.tag_configure("odd",  background="#1a1a27")
+
+        vsb3 = ttk.Scrollbar(frame, orient="vertical",
+                             command=self.traffic_tree.yview,
+                             style="Dark.Vertical.TScrollbar")
         self.traffic_tree.configure(yscrollcommand=vsb3.set)
         self.traffic_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb3.pack(side=tk.RIGHT, fill=tk.Y)
+        vsb3.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 2))
 
         self._traffic_sort_col = "总流量"
         self._traffic_sort_asc = False
@@ -622,30 +848,30 @@ class WifiMonitorApp:
 
     def _sync_ttl_state(self):
         current = get_current_ttl()
-        self.ttl_status_label.config(text=f"当前TTL：{current}")
+        self.ttl_status_label.config(text=f"TTL: {current}")
         if current == TTL_CAMPUS:
             self.campus_mode_on = True
-            self.campus_btn.config(text="关闭校园网模式", bg="#a6e3a1")
+            self.campus_btn.config(text="✅ 关闭校园网模式", bg=C["green"])
         else:
             self.campus_mode_on = False
-            self.campus_btn.config(text="开启校园网模式", bg="#f9e2af")
+            self.campus_btn.config(text="开启校园网模式", bg=C["yellow"])
 
     def toggle_campus_mode(self):
         if not self.campus_mode_on:
             ok, msg = set_ttl(TTL_CAMPUS)
             if ok:
                 self.campus_mode_on = True
-                self.campus_btn.config(text="关闭校园网模式", bg="#a6e3a1")
-                self.ttl_status_label.config(text=f"当前TTL：{TTL_CAMPUS}")
-                self._set_status("✅ 校园网模式已开启（TTL=64），热点设备不再被检测为多设备")
+                self.campus_btn.config(text="✅ 关闭校园网模式", bg=C["green"])
+                self.ttl_status_label.config(text=f"TTL: {TTL_CAMPUS}")
+                self._set_status("校园网模式已开启（TTL=64），热点设备不再被检测为多设备")
             else:
                 messagebox.showerror("失败", msg + "\n\n请右键程序选择【以管理员身份运行】")
         else:
             ok, msg = reset_ttl()
             if ok:
                 self.campus_mode_on = False
-                self.campus_btn.config(text="开启校园网模式", bg="#f9e2af")
-                self.ttl_status_label.config(text=f"当前TTL：{get_current_ttl()}")
+                self.campus_btn.config(text="开启校园网模式", bg=C["yellow"])
+                self.ttl_status_label.config(text=f"TTL: {get_current_ttl()}")
                 self._set_status("校园网模式已关闭，TTL已恢复默认（128）")
             else:
                 messagebox.showerror("失败", msg)
@@ -726,8 +952,10 @@ class WifiMonitorApp:
                 return
 
         self.running = True
-        self.start_btn.config(text="⏹ 停止监控", bg="#f38ba8")
-        self.status_label.config(text="● 监控中", fg="#a6e3a1")
+        self.start_btn.config(text="⏹  停止监控", bg=C["red"])
+        self.status_label.config(text="监控中", fg=C["green"])
+        self._start_blink()
+        self._start_uptime()
 
         if SCAPY_AVAILABLE:
             scapy_iface = get_scapy_iface()
@@ -753,8 +981,10 @@ class WifiMonitorApp:
 
     def stop_monitor(self):
         self.running = False
-        self.start_btn.config(text="▶ 开始监控", bg="#a6e3a1")
-        self.status_label.config(text="● 已停止", fg="#fab387")
+        self.start_btn.config(text="▶  开始监控", bg=C["green"])
+        self.status_label.config(text="已停止", fg=C["peach"])
+        self._stop_blink()
+        self._stop_uptime()
         self._set_status("监控已停止")
 
     def _schedule_refresh(self):
@@ -872,11 +1102,11 @@ class WifiMonitorApp:
             spd  = speeds_copy.get(ip, {"up_speed": 0.0, "down_speed": 0.0})
 
             if offline:
-                tag = "offline"
+                tag = "offline_alt" if online_count % 2 else "offline"
             elif spd["up_speed"] > 1024 or spd["down_speed"] > 1024:
-                tag = "active"
+                tag = "active_alt"  if online_count % 2 else "active"
             else:
-                tag = "online"
+                tag = "online_alt"  if online_count % 2 else "online"
 
             row_id = self.tree.insert("", tk.END, values=(
                 display_name, ip, mac,
@@ -895,6 +1125,8 @@ class WifiMonitorApp:
 
         if new_sel_item:
             self.tree.selection_set(new_sel_item)
+
+        self._update_stat_cards(online_count, stats_copy)
 
         total_visible = len(self.tree.get_children())
         self.device_count_label.config(
@@ -1084,13 +1316,13 @@ class WifiMonitorApp:
         else:
             rows.sort(key=lambda r: r[0], reverse=reverse)
 
-        for row in rows:
+        for i, row in enumerate(rows):
             self.traffic_tree.insert("", tk.END, values=(
                 row[0], row[1],
                 _fmt_bytes(row[2]),
                 _fmt_bytes(row[3]),
                 _fmt_bytes(row[4]),
-            ))
+            ), tags=("odd" if i % 2 else "even",))
 
         label_map = {"日": f"{ref_date}", "月": f"{ref_date.year}-{ref_date.month:02d}",
                      "年": str(ref_date.year), "全部": "全部时间"}
@@ -1114,7 +1346,9 @@ class WifiMonitorApp:
 
     # ──────── 工具方法 ────────
 
-    def _set_status(self, text, color="#6c7086"):
+    def _set_status(self, text, color=None):
+        if color is None:
+            color = C["overlay1"]
         self.bottom_label.config(text=text, fg=color)
 
     def on_close(self):
