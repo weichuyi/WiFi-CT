@@ -64,6 +64,85 @@ def _darken(hex_color: str, factor: float = 0.82) -> str:
     return f"#{int(r*factor):02x}{int(g*factor):02x}{int(b*factor):02x}"
 
 
+class Tooltip:
+    """鼠标悬停提示气泡"""
+    def __init__(self, widget, text: str):
+        self._widget = widget
+        self._text   = text
+        self._tip    = None
+        widget.bind("<Enter>",   self._show, add="+")
+        widget.bind("<Leave>",   self._hide, add="+")
+        widget.bind("<Button>",  self._hide, add="+")
+
+    def _show(self, event=None):
+        if self._tip:
+            return
+        x = self._widget.winfo_rootx() + 10
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
+        self._tip = tw = tk.Toplevel(self._widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.wm_attributes("-topmost", True)
+        outer = tk.Frame(tw, bg=C["surface2"], padx=1, pady=1)
+        outer.pack()
+        tk.Label(outer, text=self._text,
+                 font=("微软雅黑", 8),
+                 fg=C["text"], bg=C["surface0"],
+                 padx=8, pady=4).pack()
+
+    def _hide(self, event=None):
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
+
+
+def _make_rounded_card(parent, color: str, title: str,
+                       default_val: str, val_font_size: int = 16):
+    """用 Canvas 模拟圆角卡片，返回 (card_frame, value_label)"""
+    outer = tk.Frame(parent, bg=C["crust"])
+
+    canvas = tk.Canvas(outer, bg=C["crust"], highlightthickness=0,
+                       width=10, height=10)
+    canvas.pack(fill=tk.BOTH, expand=True)
+
+    inner = tk.Frame(canvas, bg=C["surface0"])
+    canvas_win = canvas.create_window(0, 0, anchor="nw", window=inner)
+
+    def _resize(event):
+        w, h = event.width, event.height
+        canvas.config(width=w, height=h)
+        canvas.itemconfig(canvas_win, width=w, height=h)
+        # 圆角矩形边框
+        r = 8
+        canvas.delete("border")
+        canvas.create_arc(0, 0, r*2, r*2, start=90, extent=90,
+                          fill=C["surface0"], outline=C["surface0"], tags="border")
+        canvas.create_arc(w-r*2, 0, w, r*2, start=0, extent=90,
+                          fill=C["surface0"], outline=C["surface0"], tags="border")
+        canvas.create_arc(0, h-r*2, r*2, h, start=180, extent=90,
+                          fill=C["surface0"], outline=C["surface0"], tags="border")
+        canvas.create_arc(w-r*2, h-r*2, w, h, start=270, extent=90,
+                          fill=C["surface0"], outline=C["surface0"], tags="border")
+
+    outer.bind("<Configure>", _resize, add="+")
+
+    # 内容
+    tk.Frame(inner, bg=color, height=3).pack(fill=tk.X)
+    content = tk.Frame(inner, bg=C["surface0"], padx=14, pady=8)
+    content.pack(fill=tk.BOTH, expand=True)
+
+    tk.Label(content, text=title.upper(),
+             font=("微软雅黑", 7), fg=C["overlay0"],
+             bg=C["surface0"]).pack(anchor="w")
+
+    val_lbl = tk.Label(content, text=default_val,
+                       font=("微软雅黑", val_font_size, "bold"),
+                       fg=color, bg=C["surface0"])
+    val_lbl.pack(anchor="w", pady=(2, 0))
+
+    return outer, val_lbl
+
+
 # ─────────────────────── 数据持久化 ───────────────────────
 
 DATA_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -428,7 +507,8 @@ class WifiMonitorApp:
 
         self.campus_btn = self._make_btn(
             campus_right, "开启校园网模式", C["yellow"],
-            self.toggle_campus_mode, font_size=8, padx=10, pady=3)
+            self.toggle_campus_mode, font_size=8, padx=10, pady=3,
+            tooltip="开启后将系统 TTL 改为 64，绕过校园网多设备检测")
         self.campus_btn.pack(side=tk.LEFT, padx=6)
 
         # 分割线
@@ -443,16 +523,18 @@ class WifiMonitorApp:
 
         self.start_btn = self._make_btn(
             btn_area, "▶  开始监控", C["green"],
-            self.toggle_monitor, font_size=9, padx=14, pady=5)
+            self.toggle_monitor, font_size=9, padx=14, pady=5,
+            tooltip="开始/停止监控热点设备")
         self.start_btn.pack(side=tk.LEFT, padx=(0, 6))
 
-        for text, color, cmd in [
-            ("🔄  刷新",  C["sapphire"], self.refresh_devices),
-            ("🗑  清空",  C["red"],      self.clear_stats),
-            ("⚡  断开",  C["mauve"],    self.kick_selected_device),
+        for text, color, cmd, tip in [
+            ("🔄  刷新", C["sapphire"], self.refresh_devices,  "立即刷新设备列表"),
+            ("🗑  清空", C["red"],      self.clear_stats,      "清空本次会话流量统计（历史记录不受影响）"),
+            ("⚡  断开", C["mauve"],    self.kick_selected_device, "断开选中设备（重启热点）"),
         ]:
             self._make_btn(btn_area, text, color, cmd,
-                           font_size=9, padx=10, pady=5).pack(side=tk.LEFT, padx=3)
+                           font_size=9, padx=10, pady=5,
+                           tooltip=tip).pack(side=tk.LEFT, padx=3)
 
         self.hotspot_info = tk.Label(
             toolbar, text="热点状态：检测中...",
@@ -508,8 +590,8 @@ class WifiMonitorApp:
         self.device_count_label.pack(side=tk.RIGHT, pady=4)
 
     def _make_btn(self, parent, text, color, command,
-                  font_size=9, padx=10, pady=4, fg=None):
-        """按钮工厂：自动添加 hover 变暗效果"""
+                  font_size=9, padx=10, pady=4, fg=None, tooltip=None):
+        """按钮工厂：自动添加 hover 变暗效果 + 可选 Tooltip"""
         if fg is None:
             fg = C["crust"]
         hover = _darken(color)
@@ -522,6 +604,8 @@ class WifiMonitorApp:
             activebackground=hover, activeforeground=fg, bd=0)
         btn.bind("<Enter>", lambda e: btn.config(bg=hover))
         btn.bind("<Leave>", lambda e: btn.config(bg=color))
+        if tooltip:
+            Tooltip(btn, tooltip)
         return btn
 
     def _apply_notebook_style(self):
@@ -551,28 +635,19 @@ class WifiMonitorApp:
                          arrowcolor=C["overlay0"], borderwidth=0, relief=tk.FLAT)
 
     def _build_stat_cards(self, parent):
-        """构建4个统计卡片：在线设备 / 总上传 / 总下载 / 运行时长"""
+        """构建4个统计卡片（Canvas 圆角版）：在线设备 / 总上传 / 总下载 / 运行时长"""
+        ICONS = ["💻", "⬆", "⬇", "⏱"]
         card_defs = [
-            ("在线设备", "0",        C["blue"],    "_card_devices_val",  "台"),
-            ("总上传",   "0 B",      C["green"],   "_card_upload_val",   ""),
-            ("总下载",   "0 B",      C["peach"],   "_card_download_val", ""),
-            ("运行时长", "00:00:00", C["mauve"],   "_card_uptime_val",   ""),
+            ("在线设备", "0",        C["blue"],    "_card_devices_val"),
+            ("总上传",   "0 B",      C["green"],   "_card_upload_val"),
+            ("总下载",   "0 B",      C["peach"],   "_card_download_val"),
+            ("运行时长", "00:00:00", C["mauve"],   "_card_uptime_val"),
         ]
-        for i, (label, default, color, attr, unit) in enumerate(card_defs):
-            card = tk.Frame(parent, bg=C["surface0"], padx=16, pady=10)
-            card.grid(row=0, column=i, padx=5, pady=0, sticky="nsew")
+        for i, ((label, default, color, attr), icon) in enumerate(
+                zip(card_defs, ICONS)):
+            outer, val_lbl = _make_rounded_card(parent, color, f"{icon}  {label}", default)
+            outer.grid(row=0, column=i, padx=5, pady=0, sticky="nsew")
             parent.columnconfigure(i, weight=1)
-
-            # 顶部色条
-            tk.Frame(card, bg=color, height=3).pack(fill=tk.X, pady=(0, 6))
-
-            tk.Label(card, text=label.upper(),
-                     font=("微软雅黑", 7), fg=C["overlay0"],
-                     bg=C["surface0"]).pack(anchor="w")
-            val_lbl = tk.Label(card, text=default,
-                               font=("微软雅黑", 16, "bold"),
-                               fg=color, bg=C["surface0"])
-            val_lbl.pack(anchor="w")
             setattr(self, attr, val_lbl)
 
     def _update_stat_cards(self, online_count, stats_copy):
@@ -667,8 +742,19 @@ class WifiMonitorApp:
                             command=self.tree.yview,
                             style="Dark.Vertical.TScrollbar")
         self.tree.configure(yscrollcommand=vsb.set)
+
+        # 空状态提示（叠加在 tree 上方，无设备时显示）
+        self._empty_state = tk.Label(
+            parent,
+            text="暂无设备连接\n\n请开启 Windows 移动热点\n然后点击【▶  开始监控】",
+            font=("微软雅黑", 12), fg=C["overlay0"],
+            bg=C["mantle"], justify="center")
+
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0), pady=8)
         vsb.pack(side=tk.RIGHT, fill=tk.Y, pady=8, padx=(0, 6))
+
+        # 初始显示空状态
+        self._empty_state.place(relx=0.5, rely=0.5, anchor="center")
 
         self.tree.bind("<Double-1>", lambda e: self._rename_device())
         self.tree.bind("<Button-3>", self._on_right_click)
@@ -683,10 +769,12 @@ class WifiMonitorApp:
                  bg=C["mantle"]).pack(side=tk.LEFT)
 
         self._make_btn(toolbar, "🗑  清空历史", C["red"],
-                       self._clear_history, font_size=8, padx=8, pady=3
+                       self._clear_history, font_size=8, padx=8, pady=3,
+                       tooltip="永久清空所有历史设备记录"
                        ).pack(side=tk.RIGHT, padx=4)
         self._make_btn(toolbar, "🔄  刷新", C["sapphire"],
-                       self._refresh_history_tab, font_size=8, padx=8, pady=3
+                       self._refresh_history_tab, font_size=8, padx=8, pady=3,
+                       tooltip="重新加载历史记录"
                        ).pack(side=tk.RIGHT, padx=4)
 
         h_cols = ("设备名", "MAC地址", "最后IP", "首次连接", "最后连接", "累计上线次数")
@@ -754,11 +842,13 @@ class WifiMonitorApp:
 
         self._make_btn(filter_bar, "查询", C["blue"],
                        self._refresh_traffic_tab,
-                       font_size=8, padx=10, pady=3).pack(side=tk.LEFT, padx=4)
+                       font_size=8, padx=10, pady=3,
+                       tooltip="按所选时间范围查询流量").pack(side=tk.LEFT, padx=4)
         self._make_btn(filter_bar, "🔄", C["surface1"],
                        self._refresh_traffic_tab,
                        font_size=8, padx=6, pady=3,
-                       fg=C["text"]).pack(side=tk.LEFT)
+                       fg=C["text"],
+                       tooltip="刷新流量数据").pack(side=tk.LEFT)
 
         # 合计摘要
         summary_frame = tk.Frame(parent, bg=C["mantle"], pady=5)
@@ -801,14 +891,26 @@ class WifiMonitorApp:
     def _build_context_menu(self):
         self.context_menu = tk.Menu(
             self.root, tearoff=0,
-            bg="#313244", fg="#cdd6f4",
-            activebackground="#45475a",
+            bg=C["surface0"], fg=C["text"],
+            activebackground=C["surface2"], activeforeground=C["text"],
             font=("微软雅黑", 9))
-        self.context_menu.add_command(label="✏  重命名设备",   command=self._rename_device)
-        self.context_menu.add_command(label="📋 复制 IP 地址", command=lambda: self._copy_field(1))
-        self.context_menu.add_command(label="📋 复制 MAC 地址", command=lambda: self._copy_field(2))
+        self.context_menu.add_command(label="✏  重命名设备",
+                                      foreground=C["blue"],
+                                      activeforeground=C["blue"],
+                                      command=self._rename_device)
+        self.context_menu.add_command(label="📋 复制 IP 地址",
+                                      foreground=C["subtext0"],
+                                      activeforeground=C["text"],
+                                      command=lambda: self._copy_field(1))
+        self.context_menu.add_command(label="📋 复制 MAC 地址",
+                                      foreground=C["subtext0"],
+                                      activeforeground=C["text"],
+                                      command=lambda: self._copy_field(2))
         self.context_menu.add_separator()
-        self.context_menu.add_command(label="⚡ 断开该设备",   command=self.kick_selected_device)
+        self.context_menu.add_command(label="⚡ 断开该设备",
+                                      foreground=C["red"],
+                                      activeforeground=C["red"],
+                                      command=self.kick_selected_device)
 
     # ──────── 交互事件 ────────
 
@@ -1096,7 +1198,7 @@ class WifiMonitorApp:
             display_name = self.custom_names.get(ip, info.get("hostname", ip))
             mac          = info.get("mac", "")
             first_seen   = info.get("first_seen", "-")
-            status       = "离线" if offline else "在线"
+            status       = "● 离线" if offline else "● 在线"
 
             stat = stats_copy.get(ip,  {"upload": 0, "download": 0, "total": 0})
             spd  = speeds_copy.get(ip, {"up_speed": 0.0, "down_speed": 0.0})
@@ -1129,6 +1231,14 @@ class WifiMonitorApp:
         self._update_stat_cards(online_count, stats_copy)
 
         total_visible = len(self.tree.get_children())
+
+        # 有设备时隐藏空状态提示
+        if hasattr(self, "_empty_state"):
+            if total_visible == 0:
+                self._empty_state.place(relx=0.5, rely=0.5, anchor="center")
+            else:
+                self._empty_state.place_forget()
+
         self.device_count_label.config(
             text=f"在线：{online_count} | 可见：{total_visible}")
 
